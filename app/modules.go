@@ -22,8 +22,6 @@ import (
 	capabilitytypes "github.com/cosmos/cosmos-sdk/x/capability/types"
 	"github.com/cosmos/cosmos-sdk/x/crisis"
 	crisistypes "github.com/cosmos/cosmos-sdk/x/crisis/types"
-	distr "github.com/cosmos/cosmos-sdk/x/distribution"
-	distrtypes "github.com/cosmos/cosmos-sdk/x/distribution/types"
 	"github.com/cosmos/cosmos-sdk/x/evidence"
 	evidencetypes "github.com/cosmos/cosmos-sdk/x/evidence/types"
 	"github.com/cosmos/cosmos-sdk/x/feegrant"
@@ -40,7 +38,6 @@ import (
 	paramstypes "github.com/cosmos/cosmos-sdk/x/params/types"
 	"github.com/cosmos/cosmos-sdk/x/slashing"
 	slashingtypes "github.com/cosmos/cosmos-sdk/x/slashing/types"
-	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 	"github.com/cosmos/cosmos-sdk/x/upgrade"
 	upgradeclient "github.com/cosmos/cosmos-sdk/x/upgrade/client"
 	upgradetypes "github.com/cosmos/cosmos-sdk/x/upgrade/types"
@@ -49,9 +46,10 @@ import (
 	ibc "github.com/cosmos/ibc-go/v7/modules/core"
 	ibcclientclient "github.com/cosmos/ibc-go/v7/modules/core/02-client/client"
 	ibcexported "github.com/cosmos/ibc-go/v7/modules/core/exported"
+	tendermint "github.com/cosmos/ibc-go/v7/modules/light-clients/07-tendermint"
+
 	ccvconsumer "github.com/cosmos/interchain-security/v4/x/ccv/consumer"
 	ccvconsumertypes "github.com/cosmos/interchain-security/v4/x/ccv/consumer/types"
-	ccvstaking "github.com/cosmos/interchain-security/v4/x/ccv/democracy/staking"
 	"github.com/evmos/ethermint/x/evm"
 	evmtypes "github.com/evmos/ethermint/x/evm/types"
 	"github.com/evmos/ethermint/x/feemarket"
@@ -66,7 +64,6 @@ func getGovProposalHandlers() []govclient.ProposalHandler {
 
 	govProposalHandlers = append(govProposalHandlers,
 		paramsclient.ProposalHandler,
-		//distrclient.ProposalHandler,
 		upgradeclient.LegacyProposalHandler,
 		upgradeclient.LegacyCancelProposalHandler,
 		ibcclientclient.UpdateClientProposalHandler,
@@ -89,10 +86,9 @@ var (
 		genutil.NewAppModuleBasic(genutiltypes.DefaultMessageValidator),
 		bank.AppModuleBasic{},
 		capability.AppModuleBasic{},
-		ccvstaking.AppModuleBasic{},
 		mint.AppModuleBasic{},
-		distr.AppModuleBasic{},
 		gov.NewAppModuleBasic(getGovProposalHandlers()),
+		tendermint.AppModuleBasic{},
 		params.AppModuleBasic{},
 		crisis.AppModuleBasic{},
 		slashing.AppModuleBasic{},
@@ -115,10 +111,7 @@ var (
 	// module account permissions
 	maccPerms = map[string][]string{
 		authtypes.FeeCollectorName:                    nil,
-		distrtypes.ModuleName:                         nil,
 		minttypes.ModuleName:                          {authtypes.Minter},
-		stakingtypes.BondedPoolName:                   {authtypes.Burner, authtypes.Staking},
-		stakingtypes.NotBondedPoolName:                {authtypes.Burner, authtypes.Staking},
 		govtypes.ModuleName:                           {authtypes.Burner},
 		ibctransfertypes.ModuleName:                   {authtypes.Minter, authtypes.Burner},
 		ccvconsumertypes.ConsumerRedistributeName:     {authtypes.Burner},
@@ -138,7 +131,7 @@ func appModules(
 	appCodec := encodingConfig.Codec
 	return []module.AppModule{
 		genutil.NewAppModule(
-			app.AccountKeeper, app.StakingKeeper, app.BaseApp.DeliverTx,
+			app.AccountKeeper, app.ConsumerKeeper, app.BaseApp.DeliverTx,
 			encodingConfig.TxConfig,
 		),
 		auth.NewAppModule(
@@ -184,25 +177,7 @@ func appModules(
 			app.ConsumerKeeper,
 			app.GetSubspace(slashingtypes.ModuleName),
 		),
-		distr.NewAppModule(
-			appCodec,
-			app.DistrKeeper,
-			app.AccountKeeper,
-			app.BankKeeper,
-			app.StakingKeeper,
-			app.GetSubspace(distrtypes.ModuleName),
-		),
-		ccvstaking.NewAppModule(
-			appCodec,
-			*app.StakingKeeper,
-			app.AccountKeeper,
-			app.BankKeeper,
-			app.GetSubspace(stakingtypes.ModuleName),
-		),
-		// ccvconsumer.NewAppModule(
-		// 	app.ConsumerKeeper,
-		// 	app.GetSubspace(ccvconsumertypes.ModuleName),
-		// ),
+
 		upgrade.NewAppModule(app.UpgradeKeeper),
 		evidence.NewAppModule(*app.EvidenceKeeper),
 		ibc.NewAppModule(app.IBCKeeper),
@@ -239,15 +214,12 @@ func orderBeginBlockers() []string {
 		minttypes.ModuleName,
 		feemarkettypes.ModuleName,
 		evmtypes.ModuleName,
-		distrtypes.ModuleName,
 		slashingtypes.ModuleName,
 		evidencetypes.ModuleName,
-		stakingtypes.ModuleName,
 		authtypes.ModuleName,
 		banktypes.ModuleName,
 		govtypes.ModuleName,
 		crisistypes.ModuleName,
-		ccvconsumertypes.ModuleName,
 		genutiltypes.ModuleName,
 		ibctransfertypes.ModuleName,
 		ibcexported.ModuleName,
@@ -259,6 +231,8 @@ func orderBeginBlockers() []string {
 		feetypes.ModuleName,
 		//self module
 		btcstakingtypes.ModuleName,
+
+		ccvconsumertypes.ModuleName,
 	}
 }
 
@@ -268,22 +242,18 @@ Interchain Security Requirements:
 thus, staking.EndBlock must be executed before provider.EndBlock;
 - creating a new consumer chain requires the following order,
 CreateChildClient(), staking.EndBlock, provider.EndBlock;
-thus, gov.EndBlock must be executed before staking.EndBlock
 */
 func orderEndBlockers() []string {
 	return []string{
 		crisistypes.ModuleName,
 		govtypes.ModuleName,
-		stakingtypes.ModuleName,
 		evmtypes.ModuleName,
 		feemarkettypes.ModuleName,
 		ibctransfertypes.ModuleName,
 		ibcexported.ModuleName,
-		ccvconsumertypes.ModuleName,
 		capabilitytypes.ModuleName,
 		authtypes.ModuleName,
 		banktypes.ModuleName,
-		distrtypes.ModuleName,
 		slashingtypes.ModuleName,
 		minttypes.ModuleName,
 		evidencetypes.ModuleName,
@@ -297,6 +267,8 @@ func orderEndBlockers() []string {
 		feetypes.ModuleName,
 		//self module
 		btcstakingtypes.ModuleName,
+
+		ccvconsumertypes.ModuleName,
 	}
 }
 
@@ -314,9 +286,7 @@ func orderInitBlockers() []string {
 		capabilitytypes.ModuleName,
 		authtypes.ModuleName,
 		banktypes.ModuleName,
-		distrtypes.ModuleName,
 		govtypes.ModuleName,
-		stakingtypes.ModuleName,
 		genutiltypes.ModuleName,
 		slashingtypes.ModuleName,
 		minttypes.ModuleName,
@@ -324,10 +294,6 @@ func orderInitBlockers() []string {
 		ibcexported.ModuleName,
 		authz.ModuleName,
 		feegrant.ModuleName,
-
-		//ccv
-		ccvconsumertypes.ModuleName,
-
 		paramstypes.ModuleName,
 		upgradetypes.ModuleName,
 		vestingtypes.ModuleName,
@@ -344,5 +310,8 @@ func orderInitBlockers() []string {
 
 		// NOTE: crisis module must go at the end to check for invariants on each module
 		crisistypes.ModuleName,
+
+		//ccv
+		ccvconsumertypes.ModuleName,
 	}
 }
